@@ -1,1 +1,33 @@
+# Skip the CI gate when every file changed in this push is documentation
+# (see CLAUDE.md "Git Workflow" docs-only exception) — any non-.md file
+# in the push still runs the full gate.
+
+ZERO_SHA="0000000000000000000000000000000000000000"
+run_ci=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$local_sha" = "$ZERO_SHA" ]; then
+    continue
+  fi
+
+  if [ "$remote_sha" = "$ZERO_SHA" ]; then
+    run_ci=1
+    continue
+  fi
+
+  changed_files=$(git diff --name-only "$remote_sha" "$local_sha")
+  if [ -z "$changed_files" ]; then
+    continue
+  fi
+
+  if echo "$changed_files" | grep -qv '\.md$'; then
+    run_ci=1
+  fi
+done
+
+if [ "$run_ci" -eq 0 ]; then
+  echo "Docs-only push (all changed files end in .md) — skipping the CI gate."
+  exit 0
+fi
+
 npm run ci
