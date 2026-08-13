@@ -70,10 +70,22 @@ A `pre-push` git hook (Husky) runs the CI/CD gate locally before any push reache
 - E2E tests in the hook assume the local docker-compose stack (Redis/Postgres/RabbitMQ) is already up. If it's unreachable, e2e tests fail closed (block the push) rather than being silently skipped — a push shouldn't succeed just because the test environment happened to be down.
 - Wire this as a single `npm run ci` script (chaining the steps above) that both the pre-push hook and any future actual CI/CD pipeline call — one source of truth for what "passing" means, not hook logic duplicated from a separate CI config.
 
+## Git Workflow
+
+- Never commit or push directly to `main` for code changes. Every code change happens on its own feature branch (short, descriptive, kebab-case — e.g. `rate-limiter-token-bucket`).
+- **Exception: docs-only changes** (`CLAUDE.md`, `architecture.md`, `spec.md`) that don't touch code can be committed and pushed directly to `main` — no branch/PR needed.
+- **Keep commits small and reviewable.** One logical change per commit, not a whole build-order step bundled into a single commit — the user wants to read each diff and follow how the system is built, not review a wall of code after the fact. If a step naturally breaks into parts (e.g. "the Lua script" vs "the middleware that calls it"), commit them separately.
+- **Every branch gets a PR before merging**, with a description covering:
+  - **What** changed
+  - **Why** (the motivation/context behind the change)
+  - **How** (the approach taken, any notable tradeoffs)
+- **Do not merge to `main` without the user's review and explicit go-ahead.** Push the branch, open the PR, post the link, and stop there — merging happens only after the user has reviewed it.
+- This applies from build order step 2 onward. Step 1 was committed directly to `main` as the initial scaffold before this workflow was adopted — don't treat that as precedent.
+
 ## Build order
 
 Follow `architecture.md` §10 — build incrementally, single-provider-passthrough first, alerting last. Don't jump ahead to circuit breakers/fallback before a single adapter + Postgres logging works end-to-end. Testing infrastructure (test runner, docker-compose e2e stack, the `pre-push` hook) gets set up as part of step 1, alongside the first adapter — not deferred to the end, since TDD means every component from step 1 onward is written test-first.
 
 ## Status
 
-Project scaffolding not yet started. No code, no `package.json`, no `docker-compose.yml` yet.
+Build order step 1 complete: Gateway Core (Express, ALS logging, error handling) + Anthropic Adapter + Postgres request logging, single-provider passthrough, with unit + e2e tests and the pre-push CI gate all in place. Committed directly to `main` as the initial scaffold. Next up is step 2 (Redis-backed rate limiter) — per Git Workflow above, that and everything after goes through a feature branch + PR.
