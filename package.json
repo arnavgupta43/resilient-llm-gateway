@@ -1,0 +1,46 @@
+{
+  "name": "resilient-llm-gateway",
+  "version": "0.1.0",
+  "description": "Self-hosted resilient LLM gateway: multi-provider fallback, circuit breakers, per-key rate limiting, complexity-based routing, cost logging.",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "migrate": "tsx src/db/migrate.ts",
+    "test": "jest --testPathPattern=tests/unit",
+    "test:e2e": "jest --testPathPattern=tests/e2e --runInBand",
+    "test:all": "jest --runInBand",
+    "ci": "npm run typecheck && npm run lint && npm run test && npm run test:e2e && npm run build",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
+    "dotenv": "^16.4.5",
+    "express": "^5.0.1",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.11.10",
+    "@types/supertest": "^6.0.2",
+    "eslint": "^9.15.0",
+    "husky": "^9.1.6",
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0",
+    "ts-jest": "^29.2.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.14.0"
+  }
+}
