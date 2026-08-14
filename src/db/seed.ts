@@ -20,11 +20,13 @@ async function run(): Promise<void> {
     );
   }
 
-  console.log(`Seeded dev API keys: ${DEV_KEYS.map((k) => k.rawKey).join(", ")}`);
+   // eslint-disable-next-line no-console
+    console.log(`Seeded dev API keys: ${DEV_KEYS.map((k) => k.rawKey).join(", ")}`);
 }
 
 run()
   .catch((err) => {
+     // eslint-disable-next-line no-console
     console.error(err);
     process.exitCode = 1;
   })
