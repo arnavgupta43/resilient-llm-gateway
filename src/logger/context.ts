@@ -1,9 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { RateLimitTier } from "../rateLimiter/types";
 
 export interface RequestContext {
   correlationId: string;
   apiKeyId?: string;
   featureId?: string;
+  rateLimitTier?: RateLimitTier;
 }
 
 export const requestContextStorage = new AsyncLocalStorage<RequestContext>();
