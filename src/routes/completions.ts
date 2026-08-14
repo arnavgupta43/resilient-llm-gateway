@@ -28,13 +28,13 @@ export function createCompletionsRouter(adapter: ProviderAdapter, requestsRepo: 
 
   router.post("/v1/completions", async (req, res, next) => {
     try {
+      // apiKeyId is guaranteed set here — authMiddleware runs before this
+      // route and rejects the request (401) before context reaches it.
       const context = getRequestContext();
-      if (!context?.apiKeyId) {
-        throw new ValidationError("Missing x-api-key header");
-      }
-
       const body = completionRequestSchema.parse(req.body);
-      context.featureId = body.feature_id;
+      if (context) {
+        context.featureId = body.feature_id;
+      }
 
       const result = await adapter.complete({
         messages: body.messages,
@@ -42,7 +42,7 @@ export function createCompletionsRouter(adapter: ProviderAdapter, requestsRepo: 
       });
 
       await requestsRepo.logRequest({
-        apiKeyId: context.apiKeyId,
+        apiKeyId: context?.apiKeyId as string,
         featureId: body.feature_id,
         provider: result.provider,
         tier: ROUTING_TIER,

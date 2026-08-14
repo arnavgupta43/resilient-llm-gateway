@@ -1,3 +1,5 @@
+import type { Queryable } from "./types";
+
 export interface RequestLogEntry {
   apiKeyId: string;
   featureId: string;
@@ -11,10 +13,6 @@ export interface RequestLogEntry {
 
 export interface RequestsRepo {
   logRequest(entry: RequestLogEntry): Promise<void>;
-}
-
-interface Queryable {
-  query(text: string, params: unknown[]): Promise<unknown>;
 }
 
 export function createRequestsRepo(db: Queryable): RequestsRepo {
