@@ -21,6 +21,7 @@ Solved via per-key rate limiting, complexity-based routing, cross-provider fallb
 - No frontend / dashboard. Alerting ends at a Slack/email message; observability of events is via logs + Postgres.
 - No ML-based routing or classification — all routing decisions are heuristic (see §6.4). A wrong heuristic route is recoverable; a wrong learned-model route silently returns a bad answer.
 - No caching layer (see "Deviations from original spec").
+- No usage-based (monthly/weekly LLM-token) quota enforcement. The Rate Limiter (§6.2) controls request *rate* only, not cumulative token *spend* — those are distinct concerns with different time windows (seconds/minutes vs. weeks/months), different trigger points (pre-request vs. only checkable post-response, once real token counts are known), and different sources of truth (Redis token bucket vs. an aggregate over the `requests` table). Revisit as its own feature if/when usage-based billing is needed.
 
 **Accepted tradeoffs:**
 - Routing across providers forfeits provider-specific perks (e.g. prompt-caching discounts).
