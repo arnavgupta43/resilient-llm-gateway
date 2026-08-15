@@ -128,7 +128,11 @@ export function toChatClient(sdk: OpenAI): OpenAIChatClient {
         async create(params) {
           const response = await sdk.chat.completions.create({
             model: params.model,
-            max_tokens: params.max_tokens,
+            // max_tokens is deprecated in the OpenAI SDK in favor of
+            // max_completion_tokens; discovered while implementing — the
+            // port interface keeps `max_tokens` as the gateway-internal
+            // name (matching Anthropic), translated here to the current param.
+            max_completion_tokens: params.max_tokens,
             messages: params.messages,
           });
           return {
