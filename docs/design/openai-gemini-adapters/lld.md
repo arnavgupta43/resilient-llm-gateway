@@ -187,7 +187,7 @@ import { ProviderError } from "../../errors";
 import type { GatewayCompletionRequest, GatewayCompletionResult, GatewayMessage, ProviderAdapter } from "../types";
 import { calculateCostUsd } from "./pricing";
 
-export const DEFAULT_GEMINI_MODEL = "gemini-1.5-flash";
+export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite";
 
 export interface GeminiGenerateContentClient {
   generateContent(params: {
@@ -307,7 +307,7 @@ export function getGeminiClient(): GeminiGenerateContentClient {
 import { ProviderError } from "../../errors";
 
 const PRICING_USD_PER_MILLION_TOKENS: Record<string, { prompt: number; completion: number }> = {
-  "gemini-1.5-flash": { prompt: 0.075, completion: 0.3 },
+  "gemini-2.5-flash-lite": { prompt: 0.1, completion: 0.4 },
 };
 
 export function calculateCostUsd(model: string, promptTokens: number, completionTokens: number): number {
@@ -365,7 +365,7 @@ function makeClient(generateContent: GeminiGenerateContentClient["generateConten
 Cases per adapter (mirrors Anthropic's five):
 
 1. System message extraction + role mapping — for OpenAI, assert `system` role passes straight through unmodified; for Gemini, assert `systemInstruction` is set and `contents` only has the non-system messages with `assistant` renamed to `model`.
-2. Successful response → `GatewayCompletionResult` with correctly computed `costUsd` (use round numbers, e.g. 1,000,000 prompt/completion tokens each, same trick as the Anthropic test, so the expected cost is just the per-million rate).
+2. Successful response → `GatewayCompletionResult` with correctly computed `costUsd` (use round numbers, e.g. 1,000,000 prompt/completion tokens each, same trick as the Anthropic test, so the expected cost is just the per-million rate — `0.15`/`0.60` for OpenAI, `0.10`/`0.40` for Gemini).
 3. Empty/missing content handled without throwing (`choices[0]?.message.content` for OpenAI, `response.text` for Gemini) — the equivalent of Anthropic's "multiple text blocks" case doesn't apply here since neither SDK's response shape has that structure, so this case is about a *missing* content field instead, not multiple content parts.
 4. Client failure wrapped in `ProviderError` with `cause` preserved and `provider` set (`"openai"` / `"gemini"`).
 5. Unconfigured model → `ProviderError` from `calculateCostUsd` (pass an unknown model string to the adapter's constructor, same as the Anthropic test's `"claude-unknown-model"` case).

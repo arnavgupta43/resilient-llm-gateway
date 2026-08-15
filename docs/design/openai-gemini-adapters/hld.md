@@ -37,18 +37,18 @@ Same three-file pattern as `src/adapters/anthropic/` for both:
 - **Message mapping, two translations needed (more than OpenAI, closer to Anthropic's shape):**
   - System messages pulled out into `config.systemInstruction`, same pattern as Anthropic's separate `system` param.
   - Role names differ: Gemini uses `"model"` where the gateway/OpenAI/Anthropic convention uses `"assistant"`. The adapter maps `assistant → model`, `user → user`.
-- **Default model:** `gemini-1.5-flash`. Rationale: per `architecture.md` §6.3, Gemini is the **only** provider in the `simple` tier — it's deliberately the cheap/fast option for requests the Complexity Router judged not to need a frontier model, so the default should stay on the cheap/fast end of Gemini's lineup, not its highest-capability one.
+- **Default model:** `gemini-2.5-flash-lite`. Rationale: per `architecture.md` §6.3, Gemini is the **only** provider in the `simple` tier — it's deliberately the cheap/fast option for requests the Complexity Router judged not to need a frontier model, so the default should stay on the cheap/fast end of Gemini's lineup, not its highest-capability one. (`gemini-1.5-flash`, the original choice, was confirmed retired — Google returns 404 on it as of August 2026; `gemini-2.5-flash-lite` is the current cheapest active Flash-tier model.)
 - **Token usage:** response's `usageMetadata.promptTokenCount` / `usageMetadata.candidatesTokenCount`.
-- **Note:** exact current model IDs and pricing should be double-checked against provider docs at implementation time — both providers iterate their lineups frequently and the specific figures here are a best-effort snapshot, not a guarantee.
+- **Note:** model IDs and pricing were verified against provider docs (OpenAI, `ai.google.dev/gemini-api/docs/pricing`) as of August 2026 while drafting this HLD — both providers iterate their lineups frequently, so re-check before reusing these figures much later.
 
 ## 4. Pricing tables
 
-Same `Record<model, {prompt, completion}>` USD-per-million-tokens shape as `src/adapters/anthropic/pricing.ts`. Placeholder figures (verify against current OpenAI/Google pricing pages before merging):
+Same `Record<model, {prompt, completion}>` USD-per-million-tokens shape as `src/adapters/anthropic/pricing.ts`. Figures verified against current provider pricing pages (August 2026):
 
 | Provider | Model | Prompt $/1M | Completion $/1M |
 |---|---|---|---|
 | OpenAI | `gpt-4o-mini` | 0.15 | 0.60 |
-| Google | `gemini-1.5-flash` | 0.075 | 0.30 |
+| Google | `gemini-2.5-flash-lite` | 0.10 | 0.40 |
 
 ## 5. Error handling
 
