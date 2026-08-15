@@ -24,3 +24,18 @@ export class ProviderError extends GatewayError {
     super(message, options);
   }
 }
+
+export class AuthenticationError extends GatewayError {
+  readonly httpStatus = 401;
+  readonly isOperational = true;
+}
+
+export class RateLimitExceededError extends GatewayError {
+  readonly httpStatus = 429;
+  readonly isOperational = true;
+}
+
+export class RateLimiterUnavailableError extends GatewayError {
+  readonly httpStatus = 503;
+  readonly isOperational = true;
+}

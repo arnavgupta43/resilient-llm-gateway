@@ -69,6 +69,7 @@ A `pre-push` git hook (Husky) runs the CI/CD gate locally before any push reache
 - **Blocks the push** on: any TypeScript type error, any lint *error* (lint *warnings* don't block — they're not the "critical fail" this gate exists for), any failing test (unit or e2e), or a failed build. Any one of these failing stops the push.
 - E2E tests in the hook assume the local docker-compose stack (Redis/Postgres/RabbitMQ) is already up. If it's unreachable, e2e tests fail closed (block the push) rather than being silently skipped — a push shouldn't succeed just because the test environment happened to be down.
 - Wire this as a single `npm run ci` script (chaining the steps above) that both the pre-push hook and any future actual CI/CD pipeline call — one source of truth for what "passing" means, not hook logic duplicated from a separate CI config.
+- **Docs-only pushes skip the gate entirely.** The hook diffs the files changed between what's on the remote and what's being pushed; if every changed file ends in `.md`, it exits early without running `npm run ci`. Mirrors the docs-only exception in "Git Workflow" above — no reason to spin up Postgres and run the full suite for a README edit. A push touching even one non-`.md` file still runs the full gate. New-branch pushes (nothing to diff against on the remote yet) always run the full gate rather than trying to guess.
 
 ## Git Workflow
 

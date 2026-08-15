@@ -3,9 +3,19 @@ import { createApp } from "../../../src/app";
 import { ProviderError } from "../../../src/errors";
 import type { ProviderAdapter, GatewayCompletionResult } from "../../../src/adapters/types";
 import type { RequestsRepo } from "../../../src/db/requestsRepo";
+import type { ApiKeysRepo } from "../../../src/auth/apiKeysRepo";
+import type { TokenBucket } from "../../../src/rateLimiter/tokenBucket";
 
 function makeAdapter(complete: ProviderAdapter["complete"]): ProviderAdapter {
   return { name: "anthropic", complete };
+}
+
+function makeApiKeysRepo(record: { id: string; tier: "free" | "pro" | "enterprise" } | null): ApiKeysRepo {
+  return { findByKeyHash: jest.fn().mockResolvedValue(record) };
+}
+
+function makeAllowingTokenBucket(): TokenBucket {
+  return { checkAndConsume: jest.fn().mockResolvedValue({ allowed: true, tokensRemaining: 19 }) };
 }
 
 const fakeResult: GatewayCompletionResult = {
@@ -25,6 +35,8 @@ describe("POST /v1/completions", () => {
     const app = createApp({
       anthropicAdapter: makeAdapter(complete),
       requestsRepo: { logRequest } as unknown as RequestsRepo,
+      apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "pro" }),
+      tokenBucket: makeAllowingTokenBucket(),
     });
 
     const response = await request(app)
@@ -50,7 +62,7 @@ describe("POST /v1/completions", () => {
     });
     expect(logRequest).toHaveBeenCalledWith(
       expect.objectContaining({
-        apiKeyId: "key-abc",
+        apiKeyId: "resolved-key-id",
         featureId: "capital-qa",
         provider: "anthropic",
         tier: "complex",
@@ -58,17 +70,53 @@ describe("POST /v1/completions", () => {
     );
   });
 
-  it("returns 400 when the x-api-key header is missing", async () => {
+  it("returns 401 when the x-api-key header is missing", async () => {
     const app = createApp({
       anthropicAdapter: makeAdapter(jest.fn()),
       requestsRepo: { logRequest: jest.fn() } as unknown as RequestsRepo,
+      apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "free" }),
+      tokenBucket: makeAllowingTokenBucket(),
     });
 
     const response = await request(app)
       .post("/v1/completions")
       .send({ feature_id: "f", messages: [{ role: "user", content: "hi" }] });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 401 when the x-api-key does not match any known key", async () => {
+    const app = createApp({
+      anthropicAdapter: makeAdapter(jest.fn()),
+      requestsRepo: { logRequest: jest.fn() } as unknown as RequestsRepo,
+      apiKeysRepo: makeApiKeysRepo(null),
+      tokenBucket: makeAllowingTokenBucket(),
+    });
+
+    const response = await request(app)
+      .post("/v1/completions")
+      .set("x-api-key", "not-a-real-key")
+      .send({ feature_id: "f", messages: [{ role: "user", content: "hi" }] });
+
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 429 and does not call the adapter when the rate limit is exceeded", async () => {
+    const complete = jest.fn();
+    const app = createApp({
+      anthropicAdapter: makeAdapter(complete),
+      requestsRepo: { logRequest: jest.fn() } as unknown as RequestsRepo,
+      apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "free" }),
+      tokenBucket: { checkAndConsume: jest.fn().mockResolvedValue({ allowed: false, tokensRemaining: 0 }) },
+    });
+
+    const response = await request(app)
+      .post("/v1/completions")
+      .set("x-api-key", "key-abc")
+      .send({ feature_id: "f", messages: [{ role: "user", content: "hi" }] });
+
+    expect(response.status).toBe(429);
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it("returns 400 on an invalid body without calling the adapter", async () => {
@@ -76,6 +124,8 @@ describe("POST /v1/completions", () => {
     const app = createApp({
       anthropicAdapter: makeAdapter(complete),
       requestsRepo: { logRequest: jest.fn() } as unknown as RequestsRepo,
+      apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "free" }),
+      tokenBucket: makeAllowingTokenBucket(),
     });
 
     const response = await request(app)
@@ -93,6 +143,8 @@ describe("POST /v1/completions", () => {
     const app = createApp({
       anthropicAdapter: makeAdapter(complete),
       requestsRepo: { logRequest } as unknown as RequestsRepo,
+      apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "free" }),
+      tokenBucket: makeAllowingTokenBucket(),
     });
 
     const response = await request(app)
