@@ -5,18 +5,25 @@ import { createApp } from "../../src/app";
 import { createRequestsRepo } from "../../src/db/requestsRepo";
 import { createApiKeysRepo } from "../../src/auth/apiKeysRepo";
 import { createTokenBucket } from "../../src/rateLimiter/tokenBucket";
+import { createCircuitBreaker } from "../../src/circuitBreaker/circuitBreaker";
+import { CIRCUIT_BREAKER_CONFIG } from "../../src/circuitBreaker/config";
+import { createFallbackOrchestrator } from "../../src/orchestrator/fallbackOrchestrator";
 import { hashApiKey } from "../../src/auth/hashApiKey";
 import { loadEnv } from "../../src/config/env";
+import { ProviderError } from "../../src/errors";
 import type { ProviderAdapter, GatewayCompletionResult } from "../../src/adapters/types";
+import type { ProviderName } from "../../src/orchestrator/types";
 
-// The only mock in this suite is the Anthropic adapter boundary (see
-// CLAUDE.md "Testing") — everything else, including Postgres and Redis, is
-// real.
-function makeFakeAnthropicAdapter(result: GatewayCompletionResult): ProviderAdapter {
-  return { name: "anthropic", complete: jest.fn().mockResolvedValue(result) };
+// The only mocks in this suite are at the provider adapter boundary (see
+// CLAUDE.md "Testing") — everything else, including Postgres, Redis, the
+// real circuit breaker Lua scripts, and the real FallbackOrchestrator, is
+// exercised for real.
+function makeFakeAdapter(name: ProviderName, complete: ProviderAdapter["complete"]): ProviderAdapter {
+  return { name, complete };
 }
 
 const RAW_E2E_KEY = "e2e-key";
+const BREAKER_KEYS = ["circuitbreaker:anthropic", "circuitbreaker:openai", "circuitbreaker:gemini"];
 
 describe("POST /v1/completions (e2e)", () => {
   const env = loadEnv();
@@ -38,7 +45,7 @@ describe("POST /v1/completions (e2e)", () => {
 
   beforeEach(async () => {
     await pool.query("TRUNCATE TABLE requests");
-    await redis.del(`ratelimit:${apiKeyId}`);
+    await redis.del(`ratelimit:${apiKeyId}`, ...BREAKER_KEYS);
   });
 
   afterAll(async () => {
@@ -46,9 +53,18 @@ describe("POST /v1/completions (e2e)", () => {
     await redis.quit();
   });
 
-  function buildApp(fakeResult: GatewayCompletionResult) {
+  function buildApp(adapters: Partial<Record<ProviderName, ProviderAdapter>> = {}) {
+    const circuitBreaker = createCircuitBreaker(redis, CIRCUIT_BREAKER_CONFIG);
+    const orchestrator = createFallbackOrchestrator(
+      {
+        anthropic: adapters.anthropic ?? makeFakeAdapter("anthropic", jest.fn()),
+        openai: adapters.openai ?? makeFakeAdapter("openai", jest.fn()),
+        gemini: adapters.gemini ?? makeFakeAdapter("gemini", jest.fn()),
+      },
+      circuitBreaker,
+    );
     return createApp({
-      anthropicAdapter: makeFakeAnthropicAdapter(fakeResult),
+      orchestrator,
       requestsRepo: createRequestsRepo(pool),
       apiKeysRepo: createApiKeysRepo(pool),
       tokenBucket: createTokenBucket(redis),
@@ -66,7 +82,9 @@ describe("POST /v1/completions (e2e)", () => {
       latencyMs: 120,
     };
 
-    const response = await request(buildApp(fakeResult))
+    const app = buildApp({ anthropic: makeFakeAdapter("anthropic", jest.fn().mockResolvedValue(fakeResult)) });
+
+    const response = await request(app)
       .post("/v1/completions")
       .set("x-api-key", RAW_E2E_KEY)
       .send({
@@ -102,17 +120,7 @@ describe("POST /v1/completions (e2e)", () => {
   });
 
   it("does not write a request row when the request body is invalid", async () => {
-    const response = await request(
-      buildApp({
-        content: "",
-        provider: "anthropic",
-        model: "claude-3-5-sonnet-20241022",
-        promptTokens: 0,
-        completionTokens: 0,
-        costUsd: 0,
-        latencyMs: 0,
-      }),
-    )
+    const response = await request(buildApp())
       .post("/v1/completions")
       .set("x-api-key", RAW_E2E_KEY)
       .send({ feature_id: "f", messages: [] });
@@ -124,17 +132,7 @@ describe("POST /v1/completions (e2e)", () => {
   });
 
   it("returns 401 and does not write a request row for an unrecognized api key", async () => {
-    const response = await request(
-      buildApp({
-        content: "4",
-        provider: "anthropic",
-        model: "claude-3-5-sonnet-20241022",
-        promptTokens: 1,
-        completionTokens: 1,
-        costUsd: 0,
-        latencyMs: 1,
-      }),
-    )
+    const response = await request(buildApp())
       .post("/v1/completions")
       .set("x-api-key", "totally-unrecognized-key")
       .send({ feature_id: "f", messages: [{ role: "user", content: "hi" }] });
@@ -148,17 +146,7 @@ describe("POST /v1/completions (e2e)", () => {
   it("returns 429 against the real Redis bucket once it's exhausted", async () => {
     await redis.hset(`ratelimit:${apiKeyId}`, "tokens", "0", "last_refill_ms", Date.now());
 
-    const response = await request(
-      buildApp({
-        content: "4",
-        provider: "anthropic",
-        model: "claude-3-5-sonnet-20241022",
-        promptTokens: 1,
-        completionTokens: 1,
-        costUsd: 0,
-        latencyMs: 1,
-      }),
-    )
+    const response = await request(buildApp())
       .post("/v1/completions")
       .set("x-api-key", RAW_E2E_KEY)
       .send({ feature_id: "f", messages: [{ role: "user", content: "hi" }] });
@@ -167,5 +155,76 @@ describe("POST /v1/completions (e2e)", () => {
 
     const { rows } = await pool.query("SELECT * FROM requests");
     expect(rows).toHaveLength(0);
+  });
+
+  it("falls back to OpenAI within a single request when Anthropic fails", async () => {
+    const anthropicComplete = jest.fn().mockRejectedValue(new ProviderError("upstream 500", "anthropic"));
+    const openaiResult: GatewayCompletionResult = {
+      content: "fallback answer",
+      provider: "openai",
+      model: "gpt-4o-mini",
+      promptTokens: 5,
+      completionTokens: 2,
+      costUsd: 0.000002,
+      latencyMs: 80,
+    };
+
+    const app = buildApp({
+      anthropic: makeFakeAdapter("anthropic", anthropicComplete),
+      openai: makeFakeAdapter("openai", jest.fn().mockResolvedValue(openaiResult)),
+    });
+
+    const response = await request(app)
+      .post("/v1/completions")
+      .set("x-api-key", RAW_E2E_KEY)
+      .send({ feature_id: "f", messages: [{ role: "user", content: "hi" }] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.provider).toBe("openai");
+
+    const { rows } = await pool.query<{ provider: string; tier: string }>("SELECT provider, tier FROM requests");
+    expect(rows[0]).toMatchObject({ provider: "openai", tier: "complex" });
+  });
+
+  it("opens Anthropic's real breaker after N consecutive failures and skips straight to OpenAI on the next request", async () => {
+    const anthropicComplete = jest.fn().mockRejectedValue(new ProviderError("upstream 500", "anthropic"));
+    const openaiComplete = jest.fn().mockResolvedValue({
+      content: "ok",
+      provider: "openai",
+      model: "gpt-4o-mini",
+      promptTokens: 1,
+      completionTokens: 1,
+      costUsd: 0.000001,
+      latencyMs: 10,
+    });
+    const app = buildApp({
+      anthropic: makeFakeAdapter("anthropic", anthropicComplete),
+      openai: makeFakeAdapter("openai", openaiComplete),
+    });
+
+    const send = () =>
+      request(app)
+        .post("/v1/completions")
+        .set("x-api-key", RAW_E2E_KEY)
+        .send({ feature_id: "f", messages: [{ role: "user", content: "hi" }] });
+
+    // architecture.md §11: N=5 failures opens the breaker. Each of these
+    // requests still succeeds overall — Anthropic fails, OpenAI covers it.
+    for (let i = 0; i < CIRCUIT_BREAKER_CONFIG.failureThreshold; i++) {
+      const response = await send();
+      expect(response.status).toBe(200);
+    }
+
+    expect(anthropicComplete).toHaveBeenCalledTimes(CIRCUIT_BREAKER_CONFIG.failureThreshold);
+
+    const breakerState = await redis.hget("circuitbreaker:anthropic", "state");
+    expect(breakerState).toBe("open");
+
+    // The breaker is open and cooldown hasn't elapsed — this request should
+    // skip Anthropic entirely rather than calling and failing it again.
+    const response = await send();
+    expect(response.status).toBe(200);
+    expect(anthropicComplete).toHaveBeenCalledTimes(CIRCUIT_BREAKER_CONFIG.failureThreshold); // unchanged
+    expect(openaiComplete).toHaveBeenCalledTimes(CIRCUIT_BREAKER_CONFIG.failureThreshold + 1);
   });
 });
