@@ -4,13 +4,13 @@ import { createAuthMiddleware } from "./middleware/authMiddleware";
 import { createRateLimiterMiddleware } from "./middleware/rateLimiterMiddleware";
 import { errorHandler } from "./middleware/errorHandler";
 import { createCompletionsRouter } from "./routes/completions";
-import type { ProviderAdapter } from "./adapters/types";
+import type { FallbackOrchestrator } from "./orchestrator/fallbackOrchestrator";
 import type { RequestsRepo } from "./db/requestsRepo";
 import type { ApiKeysRepo } from "./auth/apiKeysRepo";
 import type { TokenBucket } from "./rateLimiter/tokenBucket";
 
 export interface AppDependencies {
-  anthropicAdapter: ProviderAdapter;
+  orchestrator: FallbackOrchestrator;
   requestsRepo: RequestsRepo;
   apiKeysRepo: ApiKeysRepo;
   tokenBucket: TokenBucket;
@@ -32,7 +32,7 @@ export function createApp(deps: AppDependencies): Express {
   app.use(createRateLimiterMiddleware(deps.tokenBucket));
   app.use(express.json());
 
-  app.use(createCompletionsRouter(deps.anthropicAdapter, deps.requestsRepo));
+  app.use(createCompletionsRouter(deps.orchestrator, deps.requestsRepo));
 
   app.use(errorHandler);
 

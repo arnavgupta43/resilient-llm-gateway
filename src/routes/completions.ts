@@ -3,7 +3,8 @@ import { z } from "zod";
 import { ValidationError } from "../errors";
 import { getRequestContext } from "../logger/context";
 import { getLogger } from "../logger";
-import type { ProviderAdapter } from "../adapters/types";
+import type { FallbackOrchestrator } from "../orchestrator/fallbackOrchestrator";
+import type { RoutingTier } from "../orchestrator/types";
 import type { RequestsRepo } from "../db/requestsRepo";
 
 const completionRequestSchema = z.object({
@@ -20,10 +21,13 @@ const completionRequestSchema = z.object({
 });
 
 // Hardcoded until the Complexity Router lands (build order step 4) — every
-// request goes to Anthropic today, so there's no routing tier to derive yet.
-const ROUTING_TIER = "complex";
+// request starts in the complex tier. The FallbackOrchestrator can still
+// downgrade a given request to "simple" if every complex-tier provider is
+// unavailable (see requestsRepo.logRequest below, which logs the tier that
+// actually served the request, not this starting hint).
+const STARTING_TIER: RoutingTier = "complex";
 
-export function createCompletionsRouter(adapter: ProviderAdapter, requestsRepo: RequestsRepo): Router {
+export function createCompletionsRouter(orchestrator: FallbackOrchestrator, requestsRepo: RequestsRepo): Router {
   const router = Router();
 
   router.post("/v1/completions", async (req, res, next) => {
@@ -36,26 +40,23 @@ export function createCompletionsRouter(adapter: ProviderAdapter, requestsRepo: 
         context.featureId = body.feature_id;
       }
 
-      const result = await adapter.complete({
-        messages: body.messages,
-        taskType: body.task_type,
-      });
+      const { result, tier } = await orchestrator.complete(
+        { messages: body.messages, taskType: body.task_type },
+        STARTING_TIER,
+      );
 
       await requestsRepo.logRequest({
         apiKeyId: context?.apiKeyId as string,
         featureId: body.feature_id,
         provider: result.provider,
-        tier: ROUTING_TIER,
+        tier,
         promptTokens: result.promptTokens,
         completionTokens: result.completionTokens,
         costUsd: result.costUsd,
         latencyMs: result.latencyMs,
       });
 
-      getLogger().info(
-        { provider: result.provider, tier: ROUTING_TIER, latencyMs: result.latencyMs },
-        "completion served",
-      );
+      getLogger().info({ provider: result.provider, tier, latencyMs: result.latencyMs }, "completion served");
 
       res.status(200).json({
         content: result.content,
