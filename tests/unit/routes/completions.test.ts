@@ -1,13 +1,14 @@
 import request from "supertest";
 import { createApp } from "../../../src/app";
 import { ProviderError } from "../../../src/errors";
-import type { ProviderAdapter, GatewayCompletionResult } from "../../../src/adapters/types";
+import type { GatewayCompletionResult } from "../../../src/adapters/types";
+import type { FallbackOrchestrator, OrchestratorResult } from "../../../src/orchestrator/fallbackOrchestrator";
 import type { RequestsRepo } from "../../../src/db/requestsRepo";
 import type { ApiKeysRepo } from "../../../src/auth/apiKeysRepo";
 import type { TokenBucket } from "../../../src/rateLimiter/tokenBucket";
 
-function makeAdapter(complete: ProviderAdapter["complete"]): ProviderAdapter {
-  return { name: "anthropic", complete };
+function makeOrchestrator(complete: FallbackOrchestrator["complete"]): FallbackOrchestrator {
+  return { complete };
 }
 
 function makeApiKeysRepo(record: { id: string; tier: "free" | "pro" | "enterprise" } | null): ApiKeysRepo {
@@ -28,12 +29,14 @@ const fakeResult: GatewayCompletionResult = {
   latencyMs: 250,
 };
 
+const fakeOutcome: OrchestratorResult = { result: fakeResult, tier: "complex" };
+
 describe("POST /v1/completions", () => {
-  it("returns 200 with the mapped completion and logs the request", async () => {
-    const complete = jest.fn().mockResolvedValue(fakeResult);
+  it("returns 200 with the mapped completion and logs the tier the orchestrator actually served it from", async () => {
+    const complete = jest.fn().mockResolvedValue(fakeOutcome);
     const logRequest = jest.fn().mockResolvedValue(undefined);
     const app = createApp({
-      anthropicAdapter: makeAdapter(complete),
+      orchestrator: makeOrchestrator(complete),
       requestsRepo: { logRequest } as unknown as RequestsRepo,
       apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "pro" }),
       tokenBucket: makeAllowingTokenBucket(),
@@ -56,10 +59,10 @@ describe("POST /v1/completions", () => {
     });
     expect(response.headers["x-request-id"]).toBeDefined();
 
-    expect(complete).toHaveBeenCalledWith({
-      messages: [{ role: "user", content: "What is the capital of France?" }],
-      taskType: undefined,
-    });
+    expect(complete).toHaveBeenCalledWith(
+      { messages: [{ role: "user", content: "What is the capital of France?" }], taskType: undefined },
+      "complex",
+    );
     expect(logRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         apiKeyId: "resolved-key-id",
@@ -70,9 +73,27 @@ describe("POST /v1/completions", () => {
     );
   });
 
+  it("logs the downgraded tier when the orchestrator falls back to it, not the starting hint", async () => {
+    const complete = jest.fn().mockResolvedValue({ result: { ...fakeResult, provider: "gemini" }, tier: "simple" });
+    const logRequest = jest.fn().mockResolvedValue(undefined);
+    const app = createApp({
+      orchestrator: makeOrchestrator(complete),
+      requestsRepo: { logRequest } as unknown as RequestsRepo,
+      apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "pro" }),
+      tokenBucket: makeAllowingTokenBucket(),
+    });
+
+    await request(app)
+      .post("/v1/completions")
+      .set("x-api-key", "key-abc")
+      .send({ feature_id: "f", messages: [{ role: "user", content: "hi" }] });
+
+    expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({ provider: "gemini", tier: "simple" }));
+  });
+
   it("returns 401 when the x-api-key header is missing", async () => {
     const app = createApp({
-      anthropicAdapter: makeAdapter(jest.fn()),
+      orchestrator: makeOrchestrator(jest.fn()),
       requestsRepo: { logRequest: jest.fn() } as unknown as RequestsRepo,
       apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "free" }),
       tokenBucket: makeAllowingTokenBucket(),
@@ -87,7 +108,7 @@ describe("POST /v1/completions", () => {
 
   it("returns 401 when the x-api-key does not match any known key", async () => {
     const app = createApp({
-      anthropicAdapter: makeAdapter(jest.fn()),
+      orchestrator: makeOrchestrator(jest.fn()),
       requestsRepo: { logRequest: jest.fn() } as unknown as RequestsRepo,
       apiKeysRepo: makeApiKeysRepo(null),
       tokenBucket: makeAllowingTokenBucket(),
@@ -101,10 +122,10 @@ describe("POST /v1/completions", () => {
     expect(response.status).toBe(401);
   });
 
-  it("returns 429 and does not call the adapter when the rate limit is exceeded", async () => {
+  it("returns 429 and does not call the orchestrator when the rate limit is exceeded", async () => {
     const complete = jest.fn();
     const app = createApp({
-      anthropicAdapter: makeAdapter(complete),
+      orchestrator: makeOrchestrator(complete),
       requestsRepo: { logRequest: jest.fn() } as unknown as RequestsRepo,
       apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "free" }),
       tokenBucket: { checkAndConsume: jest.fn().mockResolvedValue({ allowed: false, tokensRemaining: 0 }) },
@@ -119,10 +140,10 @@ describe("POST /v1/completions", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
-  it("returns 400 on an invalid body without calling the adapter", async () => {
+  it("returns 400 on an invalid body without calling the orchestrator", async () => {
     const complete = jest.fn();
     const app = createApp({
-      anthropicAdapter: makeAdapter(complete),
+      orchestrator: makeOrchestrator(complete),
       requestsRepo: { logRequest: jest.fn() } as unknown as RequestsRepo,
       apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "free" }),
       tokenBucket: makeAllowingTokenBucket(),
@@ -137,11 +158,11 @@ describe("POST /v1/completions", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
-  it("returns 502 and does not log when the adapter throws a ProviderError", async () => {
-    const complete = jest.fn().mockRejectedValue(new ProviderError("upstream 500", "anthropic"));
+  it("returns 502 and does not log when the orchestrator throws ProviderError (all providers unavailable)", async () => {
+    const complete = jest.fn().mockRejectedValue(new ProviderError("All providers unavailable", "none"));
     const logRequest = jest.fn();
     const app = createApp({
-      anthropicAdapter: makeAdapter(complete),
+      orchestrator: makeOrchestrator(complete),
       requestsRepo: { logRequest } as unknown as RequestsRepo,
       apiKeysRepo: makeApiKeysRepo({ id: "resolved-key-id", tier: "free" }),
       tokenBucket: makeAllowingTokenBucket(),
