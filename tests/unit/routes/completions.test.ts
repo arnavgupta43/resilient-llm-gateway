@@ -61,7 +61,7 @@ describe("POST /v1/completions", () => {
 
     expect(complete).toHaveBeenCalledWith(
       { messages: [{ role: "user", content: "What is the capital of France?" }], taskType: undefined },
-      "complex",
+      "simple",
     );
     expect(logRequest).toHaveBeenCalledWith(
       expect.objectContaining({

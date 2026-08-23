@@ -3,8 +3,8 @@ import { z } from "zod";
 import { ValidationError } from "../errors";
 import { getRequestContext } from "../logger/context";
 import { getLogger } from "../logger";
+import { chooseTier } from "../router/complexityRouter";
 import type { FallbackOrchestrator } from "../orchestrator/fallbackOrchestrator";
-import type { RoutingTier } from "../orchestrator/types";
 import type { RequestsRepo } from "../db/requestsRepo";
 
 const completionRequestSchema = z.object({
@@ -20,13 +20,6 @@ const completionRequestSchema = z.object({
     .min(1),
 });
 
-// Hardcoded until the Complexity Router lands (build order step 4) — every
-// request starts in the complex tier. The FallbackOrchestrator can still
-// downgrade a given request to "simple" if every complex-tier provider is
-// unavailable (see requestsRepo.logRequest below, which logs the tier that
-// actually served the request, not this starting hint).
-const STARTING_TIER: RoutingTier = "complex";
-
 export function createCompletionsRouter(orchestrator: FallbackOrchestrator, requestsRepo: RequestsRepo): Router {
   const router = Router();
 
@@ -40,10 +33,9 @@ export function createCompletionsRouter(orchestrator: FallbackOrchestrator, requ
         context.featureId = body.feature_id;
       }
 
-      const { result, tier } = await orchestrator.complete(
-        { messages: body.messages, taskType: body.task_type },
-        STARTING_TIER,
-      );
+      const request = { messages: body.messages, taskType: body.task_type };
+      const startingTier = chooseTier(request);
+      const { result, tier } = await orchestrator.complete(request, startingTier);
 
       await requestsRepo.logRequest({
         apiKeyId: context?.apiKeyId as string,
