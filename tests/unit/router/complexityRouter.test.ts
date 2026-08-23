@@ -23,6 +23,14 @@ describe("chooseTier", () => {
       expect(chooseTier(requestWith("hi", "some_made_up_type"))).toBe("simple");
       expect(chooseTier(requestWith("```code```", "some_made_up_type"))).toBe("complex");
     });
+
+    it.each(["constructor", "toString", "hasOwnProperty", "valueOf", "__proto__"])(
+      'task_type "%s" (an Object.prototype property name) falls through to heuristics instead of resolving to a built-in',
+      (taskType) => {
+        expect(chooseTier(requestWith("hi", taskType))).toBe("simple");
+        expect(chooseTier(requestWith("```code```", taskType))).toBe("complex");
+      },
+    );
   });
 
   describe("length heuristic", () => {

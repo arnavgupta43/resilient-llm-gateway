@@ -23,27 +23,35 @@ That's the whole change. No new folder for types/config the way `circuitBreaker/
 import type { GatewayCompletionRequest } from "../adapters/types";
 import type { RoutingTier } from "../orchestrator/types";
 
-// hld.md §3.1. Exact-match against the caller's own task_type string.
-const TASK_TYPE_TIER: Record<string, RoutingTier> = {
-  summarization: "simple",
-  classification: "simple",
-  extraction: "simple",
-  translation: "simple",
-  code_generation: "complex",
-  debugging: "complex",
-  reasoning: "complex",
-  analysis: "complex",
-};
+// hld.md §3.1. Exact-match against the caller's own task_type string. A Map,
+// not a plain object -- an object literal inherits Object.prototype, so a
+// caller-supplied task_type of "constructor"/"toString"/"hasOwnProperty"
+// would otherwise resolve to a built-in function instead of undefined.
+// Map.get() has no prototype-chain lookup, so any unknown key -- including
+// those names -- always returns undefined.
+const TASK_TYPE_TIER = new Map<string, RoutingTier>([
+  ["summarization", "simple"],
+  ["classification", "simple"],
+  ["extraction", "simple"],
+  ["translation", "simple"],
+  ["code_generation", "complex"],
+  ["debugging", "complex"],
+  ["reasoning", "complex"],
+  ["analysis", "complex"],
+]);
 
 const LONG_PROMPT_THRESHOLD_CHARS = 600; // hld.md §3.2
 
 const CODE_BLOCK_PATTERN = /```/;
 
-const REASONING_KEYWORDS = ["explain step by step", "step by step", "prove", "debug", "walk me through", "why does"];
+// "explain step by step" isn't listed separately -- it's always a superset
+// match of "step by step", so it can never fire independently.
+const REASONING_KEYWORDS = ["step by step", "prove", "debug", "walk me through", "why does"];
 
 function latestUserMessageContent(request: GatewayCompletionRequest): string | undefined {
   for (let i = request.messages.length - 1; i >= 0; i--) {
-    if (request.messages[i].role === "user") return request.messages[i].content;
+    const message = request.messages[i];
+    if (message !== undefined && message.role === "user") return message.content;
   }
   return undefined;
 }
@@ -56,8 +64,9 @@ function matchesHeuristic(content: string): boolean {
 }
 
 export function chooseTier(request: GatewayCompletionRequest): RoutingTier {
-  if (request.taskType !== undefined && request.taskType in TASK_TYPE_TIER) {
-    return TASK_TYPE_TIER[request.taskType];
+  if (request.taskType !== undefined) {
+    const tier = TASK_TYPE_TIER.get(request.taskType);
+    if (tier !== undefined) return tier;
   }
 
   const content = latestUserMessageContent(request);
@@ -69,7 +78,8 @@ export function chooseTier(request: GatewayCompletionRequest): RoutingTier {
 
 A few things worth walking through:
 
-- **`request.taskType in TASK_TYPE_TIER`** — the `in` operator checks *key presence* on the object, not whether the value is truthy. That distinction matters here because every value in `TASK_TYPE_TIER` happens to be a non-empty string (always truthy), so `TASK_TYPE_TIER[request.taskType] !== undefined` would behave identically today — but `in` is the version that stays correct if a future tier value could ever be falsy, and it reads as "is this a known key" rather than "did the lookup not fail," which is closer to what the code actually means. Small thing, but it's the kind of habit worth having by default rather than only reaching for when a bug forces it.
+- **`TASK_TYPE_TIER` is a `Map`, not a plain object — found during code review, not the first draft.** The original draft used `Record<string, RoutingTier>` with `request.taskType in TASK_TYPE_TIER` as the presence check. That's broken: every plain object literal inherits from `Object.prototype`, so a caller sending `task_type: "constructor"` (or `"toString"`, `"hasOwnProperty"`, `"valueOf"`, …) would find that key genuinely present — `in` returns `true`, and the lookup returns the *inherited built-in function*, not `undefined`. That value then flows out of `chooseTier` typed as `RoutingTier` but not actually one, and breaks whatever reads it next (`TIER_PROVIDERS[tier]` in `orchestrator/config.ts` would return `undefined` for a bogus tier, and the orchestrator's `for (const provider of healthy)` loop throws on iterating `undefined` — uncaught, surfacing as a 500). `Map.get()` has no prototype chain to fall into — an unknown key, including those exact strings, always returns `undefined`. This is also why the presence check simplified back to `tier !== undefined`: with a `Map`, that's not a workaround for a TS quirk (as the original `in`-based draft justified it), it's just the natural way to read a `Map`.
+- **Backward loop in `latestUserMessageContent`** — `architecture.md` §2 says the client sends the *full* history each call, so `messages` can end in an assistant/system turn in principle (unusual, but the schema doesn't forbid it). Walking from the end and returning on the first `role: "user"` hit is simpler and cheaper than `messages.filter(m => m.role === "user").at(-1)`, which would build a whole intermediate array just to throw most of it away. (The `message !== undefined` check alongside it is `noUncheckedIndexedAccess` — indexing an array with a variable index is typed `T | undefined` even though the loop bounds make it always defined in practice.)
 - **Backward loop in `latestUserMessageContent`** — `architecture.md` §2 says the client sends the *full* history each call, so `messages` can end in an assistant/system turn in principle (unusual, but the schema doesn't forbid it). Walking from the end and returning on the first `role: "user"` hit is simpler and cheaper than `messages.filter(m => m.role === "user").at(-1)`, which would build a whole intermediate array just to throw most of it away.
 - **`matchesHeuristic` returns as soon as one signal fires** — this is the OR from `hld.md` §2.1 written directly as three early returns rather than `length > N || CODE_BLOCK_PATTERN.test(c) || REASONING_KEYWORDS.some(...)` as one boolean expression. Same result; this reads slightly easier top-to-bottom and makes it trivial to add a `getLogger().debug(...)` on a specific branch later if the thresholds ever need tuning against real traffic.
 - **No exported constants** — `TASK_TYPE_TIER`, `LONG_PROMPT_THRESHOLD_CHARS`, etc. stay module-private. Nothing outside this file needs them; `chooseTier` is the entire public surface, consistent with CLAUDE.md's "pure function, unit-testable without mocks" framing — the tests exercise it through its one exported function, not by reaching into its internals.
@@ -144,6 +154,17 @@ describe("chooseTier", () => {
       expect(chooseTier(requestWith("hi", "some_made_up_type"))).toBe("simple");
       expect(chooseTier(requestWith("```code```", "some_made_up_type"))).toBe("complex");
     });
+
+    // Regression test for the Object.prototype bug caught in code review
+    // (§2) -- these key names must behave exactly like any other unknown
+    // task_type, not resolve to a built-in.
+    it.each(["constructor", "toString", "hasOwnProperty", "valueOf", "__proto__"])(
+      'task_type "%s" falls through to heuristics instead of resolving to a built-in',
+      (taskType) => {
+        expect(chooseTier(requestWith("hi", taskType))).toBe("simple");
+        expect(chooseTier(requestWith("```code```", taskType))).toBe("complex");
+      },
+    );
   });
 
   describe("length heuristic", () => {
