@@ -89,4 +89,11 @@ Follow `architecture.md` §10 — build incrementally, single-provider-passthrou
 
 ## Status
 
-Build order step 1 complete: Gateway Core (Express, ALS logging, error handling) + Anthropic Adapter + Postgres request logging, single-provider passthrough, with unit + e2e tests and the pre-push CI gate all in place. Committed directly to `main` as the initial scaffold. Next up is step 2 (Redis-backed rate limiter) — per Git Workflow above, that and everything after goes through a feature branch + PR.
+Build order steps 1–4 complete (each after step 1 via its own feature branch + PR, per Git Workflow above):
+
+1. Gateway Core (Express, ALS logging, error handling) + Anthropic Adapter + Postgres request logging — committed directly to `main` as the initial scaffold.
+2. Redis-backed tiered rate limiter (Lua token bucket) + hashed API key auth.
+3. OpenAI + Gemini adapters, Redis-backed circuit breaker, and the Fallback Orchestrator — multi-provider failover with tier-aware fallback and `tier_downgrade` landed together with this step rather than being deferred to step 4.
+4. Complexity Router (`chooseTier`) — replaces the hardcoded starting tier with a real per-request decision (`task_type` lookup, then length/code-block/reasoning-keyword heuristics).
+
+Next up is step 5 (Event Publisher + RabbitMQ + Logger Consumer). Alert-worthy events (`circuit_breaker.opened`, `circuit_breaker.closed`, `tier_downgrade`, `rate_limit.exceeded`) are currently structured log lines with full ALS context, not yet published anywhere — each component's HLD in `docs/design/` notes this as the "swap the log call for `publish(...)` later" plan.

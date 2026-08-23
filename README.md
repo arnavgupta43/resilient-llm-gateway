@@ -10,14 +10,14 @@ It does this with per-key rate limiting, complexity-based routing, cross-provide
 
 ## Status
 
-**Build order step 1 complete:** Gateway Core + Anthropic Adapter + Postgres request logging, single-provider passthrough, end to end. Everything else below is roadmap, not yet built.
+**Build order steps 1–4 complete:** all three provider adapters, Redis-backed rate limiting, circuit breaker + cross-provider fallback, and complexity-based routing are wired up end to end — a request now picks its own tier, fails over across providers, and gets logged with real cost/token data. What's left is the internal event path and the AWS alert sink; alert-worthy events (`circuit_breaker.opened`, `tier_downgrade`, etc.) are currently structured log lines, not yet published anywhere.
 
 | Step | What | Status |
 |---|---|---|
 | 1 | Gateway Core + one Provider Adapter + Postgres request logging | ✅ Done |
-| 2 | Rate Limiter (Redis, Lua token bucket, tiered) | ⬜ Not started |
-| 3 | Remaining adapters + Circuit Breaker + Fallback Orchestrator | ⬜ Not started |
-| 4 | Complexity Router + tier-aware fallback + `tier_downgrade` | ⬜ Not started |
+| 2 | Rate Limiter (Redis, Lua token bucket, tiered) | ✅ Done |
+| 3 | Remaining adapters + Circuit Breaker + Fallback Orchestrator | ✅ Done |
+| 4 | Complexity Router + tier-aware fallback + `tier_downgrade` | ✅ Done |
 | 5 | Event Publisher + RabbitMQ + Logger Consumer | ⬜ Not started |
 | 6 | Alert Relay + EventBridge + Lambda | ⬜ Not started |
 
@@ -54,20 +54,20 @@ Full design lives in [`architecture.md`](./architecture.md). The original brief 
 
 - Node.js + TypeScript
 - Express 5.x
-- Redis (rate-limiter buckets, circuit-breaker state) — not yet wired up
+- Redis (rate-limiter buckets, circuit-breaker state)
 - Postgres (request cost/token log, event audit log)
 - RabbitMQ (internal event bus) — not yet wired up
 - AWS EventBridge + Lambda (alert sink) — not yet wired up
 
 ## Getting started
 
-**Prerequisites:** Node.js 22+, Docker Desktop, an Anthropic API key.
+**Prerequisites:** Node.js 22+, Docker Desktop, API keys for Anthropic, OpenAI, and Gemini.
 
 ```bash
 npm install
-cp .env.example .env   # fill in ANTHROPIC_API_KEY; DATABASE_URL default matches docker-compose
+cp .env.example .env   # fill in the three provider API keys; DATABASE_URL/REDIS_URL defaults match docker-compose
 
-docker compose up -d   # starts local Postgres (dev + test)
+docker compose up -d   # starts local Postgres + Redis (dev and test instances of each)
 npm run migrate         # applies schema to $DATABASE_URL
 
 npm run dev             # starts the gateway on $PORT (default 3000)
@@ -84,6 +84,8 @@ curl http://localhost:3000/v1/completions \
     "messages": [{ "role": "user", "content": "What is the capital of France?" }]
   }'
 ```
+
+`task_type` is an optional field on the request body (e.g. `"summarization"`, `"debugging"`) that hints the Complexity Router toward the cheap or capable tier — see `architecture.md` §6.3. Without it, the router falls back to heuristics on the latest message (length, code blocks, reasoning keywords).
 
 ## Testing
 
@@ -103,3 +105,4 @@ A Husky `pre-push` hook runs `npm run ci` automatically and blocks the push on a
 - [`spec.md`](./spec.md) — original technical spec, with revision history
 - [`architecture.md`](./architecture.md) — current authoritative system design
 - [`CLAUDE.md`](./CLAUDE.md) — conventions: logging, error handling, testing, git workflow
+- [`docs/design/`](./docs/design/) — per-feature HLD/LLD design docs (one folder per build-order step from step 2 onward), the paper trail behind how each component got built
