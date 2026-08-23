@@ -89,6 +89,13 @@ describe("POST /v1/completions (e2e)", () => {
       .set("x-api-key", RAW_E2E_KEY)
       .send({
         feature_id: "arithmetic-qa",
+        // task_type: "reasoning" pins this to the complex tier via the
+        // router's lookup table -- otherwise a short, plain prompt like this
+        // now starts in the simple tier, and only reaches the anthropic mock
+        // this test actually cares about via an incidental downgrade (the
+        // simple tier's unmocked gemini adapter resolves to undefined,
+        // which the orchestrator treats as a failed attempt).
+        task_type: "reasoning",
         messages: [{ role: "user", content: "What is 2+2?" }],
       });
 
@@ -177,7 +184,9 @@ describe("POST /v1/completions (e2e)", () => {
     const response = await request(app)
       .post("/v1/completions")
       .set("x-api-key", RAW_E2E_KEY)
-      .send({ feature_id: "f", messages: [{ role: "user", content: "hi" }] });
+      // task_type: "reasoning" pins this to the complex tier -- see the note
+      // on the first test above.
+      .send({ feature_id: "f", task_type: "reasoning", messages: [{ role: "user", content: "hi" }] });
 
     expect(response.status).toBe(200);
     expect(response.body.provider).toBe("openai");
@@ -206,7 +215,9 @@ describe("POST /v1/completions (e2e)", () => {
       request(app)
         .post("/v1/completions")
         .set("x-api-key", RAW_E2E_KEY)
-        .send({ feature_id: "f", messages: [{ role: "user", content: "hi" }] });
+        // task_type: "reasoning" pins this to the complex tier -- see the
+        // note on the first test above.
+        .send({ feature_id: "f", task_type: "reasoning", messages: [{ role: "user", content: "hi" }] });
 
     // architecture.md §11: N=5 failures opens the breaker. Each of these
     // requests still succeeds overall — Anthropic fails, OpenAI covers it.
